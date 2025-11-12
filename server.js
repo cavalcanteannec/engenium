@@ -1,0 +1,637 @@
+const express = require('express');
+const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
+
+const app = express();
+const PORT = 3002;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.static('.')); // Servir arquivos estáticos
+
+// Caminho do arquivo de dados
+const DATA_FILE = path.join(__dirname, 'data.json');
+
+// Função para ler dados do arquivo
+function readData() {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const data = fs.readFileSync(DATA_FILE, 'utf8');
+      return JSON.parse(data);
+    }
+  } catch (error) {
+    console.error('Erro ao ler dados:', error);
+  }
+  
+  // Dados iniciais padrão
+  return {
+    categories: [
+      { id: '1', name: 'Cabelo', description: 'Serviços de cabelo' },
+      { id: '2', name: 'Unha', description: 'Manicure e pedicure' },
+      { id: '3', name: 'Barba', description: 'Serviços de barbearia' }
+    ],
+    services: [
+      { id: '1', name: 'Corte + Escova', categoryId: '1', price: 100, duration: 60, active: true },
+      { id: '2', name: 'Escova Simples', categoryId: '1', price: 50, duration: 30, active: true },
+      { id: '3', name: 'Manicure', categoryId: '2', price: 35, duration: 45, active: true },
+      { id: '4', name: 'Barba Completa', categoryId: '3', price: 40, duration: 30, active: true }
+    ],
+    employees: [
+      { id: '1', name: 'Ana Paula Silva', phone: '85999999999', email: 'ana@email.com', active: true, specialties: ['1', '2'] },
+      { id: '2', name: 'Carlos Mendes', phone: '85988888888', email: 'carlos@email.com', active: true, specialties: ['4'] },
+      { id: '3', name: 'Fernanda Lima', phone: '85977777777', email: 'fernanda@email.com', active: true, specialties: ['3'] }
+    ],
+    appointments: [],
+    businessSettings: {
+      businessHoursStart: '09:00',
+      businessHoursEnd: '18:00',
+      workingDays: ['seg', 'ter', 'qua', 'qui', 'sex', 'sab'],
+      minBookingAdvance: 60, // minutos
+      timeSlotInterval: 30 // intervalo entre horários em minutos
+    }
+  };
+}
+
+// Função para salvar dados no arquivo
+function saveData(data) {
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf8');
+    return true;
+  } catch (error) {
+    console.error('Erro ao salvar dados:', error);
+    return false;
+  }
+}
+
+// ==================== ROTAS DE CATEGORIAS ====================
+
+// GET /api/categories - Listar todas as categorias
+app.get('/api/categories', (req, res) => {
+  const data = readData();
+  res.json(data.categories);
+});
+
+// GET /api/categories/:id - Obter uma categoria específica
+app.get('/api/categories/:id', (req, res) => {
+  const data = readData();
+  const category = data.categories.find(c => c.id === req.params.id);
+  
+  if (!category) {
+    return res.status(404).json({ error: 'Categoria não encontrada' });
+  }
+  
+  res.json(category);
+});
+
+// POST /api/categories - Criar nova categoria
+app.post('/api/categories', (req, res) => {
+  const data = readData();
+  const { name, description } = req.body;
+  
+  if (!name) {
+    return res.status(400).json({ error: 'Nome é obrigatório' });
+  }
+  
+  const newCategory = {
+    id: Date.now().toString(),
+    name,
+    description: description || ''
+  };
+  
+  data.categories.push(newCategory);
+  saveData(data);
+  
+  res.status(201).json(newCategory);
+});
+
+// PUT /api/categories/:id - Atualizar categoria
+app.put('/api/categories/:id', (req, res) => {
+  const data = readData();
+  const categoryIndex = data.categories.findIndex(c => c.id === req.params.id);
+  
+  if (categoryIndex === -1) {
+    return res.status(404).json({ error: 'Categoria não encontrada' });
+  }
+  
+  data.categories[categoryIndex] = {
+    ...data.categories[categoryIndex],
+    ...req.body,
+    id: req.params.id // Garantir que o ID não seja alterado
+  };
+  
+  saveData(data);
+  res.json(data.categories[categoryIndex]);
+});
+
+// DELETE /api/categories/:id - Deletar categoria
+app.delete('/api/categories/:id', (req, res) => {
+  const data = readData();
+  const categoryIndex = data.categories.findIndex(c => c.id === req.params.id);
+  
+  if (categoryIndex === -1) {
+    return res.status(404).json({ error: 'Categoria não encontrada' });
+  }
+  
+  // Verificar se há serviços usando esta categoria
+  const servicesUsingCategory = data.services.filter(s => s.categoryId === req.params.id);
+  if (servicesUsingCategory.length > 0) {
+    return res.status(400).json({ 
+      error: 'Não é possível deletar categoria com serviços associados',
+      servicesCount: servicesUsingCategory.length
+    });
+  }
+  
+  data.categories.splice(categoryIndex, 1);
+  saveData(data);
+  
+  res.json({ message: 'Categoria deletada com sucesso' });
+});
+
+// ==================== ROTAS DE SERVIÇOS ====================
+
+// GET /api/services - Listar todos os serviços
+app.get('/api/services', (req, res) => {
+  const data = readData();
+  const { categoryId, active, search } = req.query;
+  
+  let services = [...data.services];
+  
+  // Filtro por categoria
+  if (categoryId && categoryId !== 'all') {
+    services = services.filter(s => s.categoryId === categoryId);
+  }
+  
+  // Filtro por status ativo
+  if (active !== undefined) {
+    const isActive = active === 'true';
+    services = services.filter(s => s.active === isActive);
+  }
+  
+  // Busca por nome
+  if (search) {
+    const searchLower = search.toLowerCase();
+    services = services.filter(s => 
+      s.name.toLowerCase().includes(searchLower)
+    );
+  }
+  
+  // Adicionar nome da categoria a cada serviço
+  const servicesWithCategory = services.map(service => {
+    const category = data.categories.find(c => c.id === service.categoryId);
+    return {
+      ...service,
+      categoryName: category ? category.name : 'Sem categoria'
+    };
+  });
+  
+  res.json(servicesWithCategory);
+});
+
+// GET /api/services/:id - Obter um serviço específico
+app.get('/api/services/:id', (req, res) => {
+  const data = readData();
+  const service = data.services.find(s => s.id === req.params.id);
+  
+  if (!service) {
+    return res.status(404).json({ error: 'Serviço não encontrado' });
+  }
+  
+  const category = data.categories.find(c => c.id === service.categoryId);
+  res.json({
+    ...service,
+    categoryName: category ? category.name : 'Sem categoria'
+  });
+});
+
+// POST /api/services - Criar novo serviço
+app.post('/api/services', (req, res) => {
+  const data = readData();
+  const { name, categoryId, price, duration, active } = req.body;
+  
+  if (!name || !categoryId || price === undefined || duration === undefined) {
+    return res.status(400).json({ 
+      error: 'Campos obrigatórios: name, categoryId, price, duration' 
+    });
+  }
+  
+  // Verificar se a categoria existe
+  const category = data.categories.find(c => c.id === categoryId);
+  if (!category) {
+    return res.status(400).json({ error: 'Categoria não encontrada' });
+  }
+  
+  const newService = {
+    id: Date.now().toString(),
+    name,
+    categoryId,
+    price: parseFloat(price),
+    duration: parseInt(duration),
+    active: active !== undefined ? active : true
+  };
+  
+  data.services.push(newService);
+  saveData(data);
+  
+  res.status(201).json({
+    ...newService,
+    categoryName: category.name
+  });
+});
+
+// PUT /api/services/:id - Atualizar serviço
+app.put('/api/services/:id', (req, res) => {
+  const data = readData();
+  const serviceIndex = data.services.findIndex(s => s.id === req.params.id);
+  
+  if (serviceIndex === -1) {
+    return res.status(404).json({ error: 'Serviço não encontrado' });
+  }
+  
+  // Se categoryId está sendo atualizado, verificar se existe
+  if (req.body.categoryId) {
+    const category = data.categories.find(c => c.id === req.body.categoryId);
+    if (!category) {
+      return res.status(400).json({ error: 'Categoria não encontrada' });
+    }
+  }
+  
+  data.services[serviceIndex] = {
+    ...data.services[serviceIndex],
+    ...req.body,
+    id: req.params.id, // Garantir que o ID não seja alterado
+    price: req.body.price !== undefined ? parseFloat(req.body.price) : data.services[serviceIndex].price,
+    duration: req.body.duration !== undefined ? parseInt(req.body.duration) : data.services[serviceIndex].duration
+  };
+  
+  saveData(data);
+  
+  const category = data.categories.find(c => c.id === data.services[serviceIndex].categoryId);
+  res.json({
+    ...data.services[serviceIndex],
+    categoryName: category ? category.name : 'Sem categoria'
+  });
+});
+
+// DELETE /api/services/:id - Deletar serviço
+app.delete('/api/services/:id', (req, res) => {
+  const data = readData();
+  const serviceIndex = data.services.findIndex(s => s.id === req.params.id);
+  
+  if (serviceIndex === -1) {
+    return res.status(404).json({ error: 'Serviço não encontrado' });
+  }
+  
+  data.services.splice(serviceIndex, 1);
+  saveData(data);
+  
+  res.json({ message: 'Serviço deletado com sucesso' });
+});
+
+// ==================== ROTAS DE FUNCIONÁRIOS ====================
+
+// GET /api/employees - Listar todos os funcionários
+app.get('/api/employees', (req, res) => {
+  const data = readData();
+  res.json(data.employees);
+});
+
+// GET /api/employees/:id - Obter um funcionário específico
+app.get('/api/employees/:id', (req, res) => {
+  const data = readData();
+  const employee = data.employees.find(e => e.id === req.params.id);
+  
+  if (!employee) {
+    return res.status(404).json({ error: 'Funcionário não encontrado' });
+  }
+  
+  res.json(employee);
+});
+
+// POST /api/employees - Criar novo funcionário
+app.post('/api/employees', (req, res) => {
+  const data = readData();
+  const { name, phone, email, specialties, active } = req.body;
+  
+  if (!name || !phone || !email) {
+    return res.status(400).json({ 
+      error: 'Campos obrigatórios: name, phone, email' 
+    });
+  }
+  
+  const newEmployee = {
+    id: Date.now().toString(),
+    name,
+    phone,
+    email,
+    specialties: specialties || [],
+    active: active !== undefined ? active : true
+  };
+  
+  data.employees.push(newEmployee);
+  saveData(data);
+  
+  res.status(201).json(newEmployee);
+});
+
+// PUT /api/employees/:id - Atualizar funcionário
+app.put('/api/employees/:id', (req, res) => {
+  const data = readData();
+  const employeeIndex = data.employees.findIndex(e => e.id === req.params.id);
+  
+  if (employeeIndex === -1) {
+    return res.status(404).json({ error: 'Funcionário não encontrado' });
+  }
+  
+  data.employees[employeeIndex] = {
+    ...data.employees[employeeIndex],
+    ...req.body,
+    id: req.params.id // Garantir que o ID não seja alterado
+  };
+  
+  saveData(data);
+  res.json(data.employees[employeeIndex]);
+});
+
+// DELETE /api/employees/:id - Deletar funcionário
+app.delete('/api/employees/:id', (req, res) => {
+  const data = readData();
+  const employeeIndex = data.employees.findIndex(e => e.id === req.params.id);
+  
+  if (employeeIndex === -1) {
+    return res.status(404).json({ error: 'Funcionário não encontrado' });
+  }
+  
+  data.employees.splice(employeeIndex, 1);
+  saveData(data);
+  
+  res.json({ message: 'Funcionário deletado com sucesso' });
+});
+
+// ==================== ROTA DE INFORMAÇÕES DO NEGÓCIO ====================
+
+// GET /api/business - Obter informações do negócio
+app.get('/api/business', (req, res) => {
+  const data = readData();
+  res.json({
+    barbershopName: 'Studio Beleza',
+    primaryColor: '#8B5CF6',
+    secondaryColor: '#EC4899'
+  });
+});
+
+// ==================== ROTAS DE AGENDAMENTOS ====================
+
+// GET /api/appointments - Listar todos os agendamentos
+app.get('/api/appointments', (req, res) => {
+  const data = readData();
+  const { date, employeeId, status } = req.query;
+  
+  let appointments = [...data.appointments];
+  
+  // Filtro por data
+  if (date) {
+    appointments = appointments.filter(apt => apt.date === date);
+  }
+  
+  // Filtro por funcionário
+  if (employeeId) {
+    appointments = appointments.filter(apt => apt.employeeId === employeeId);
+  }
+  
+  // Filtro por status
+  if (status) {
+    appointments = appointments.filter(apt => apt.status === status);
+  }
+  
+  res.json(appointments);
+});
+
+// GET /api/appointments/available - Obter horários disponíveis
+app.get('/api/appointments/available', (req, res) => {
+  const data = readData();
+  const { date, serviceId, employeeId } = req.query;
+  
+  if (!date || !serviceId) {
+    return res.status(400).json({ error: 'Data e serviceId são obrigatórios' });
+  }
+  
+  // Buscar serviço para obter duração
+  const service = data.services.find(s => s.id === serviceId && s.active);
+  if (!service) {
+    return res.status(404).json({ error: 'Serviço não encontrado ou inativo' });
+  }
+  
+  const settings = data.businessSettings;
+  const serviceDuration = service.duration;
+  
+  // Verificar se a data é um dia de trabalho
+  const dateObj = new Date(date);
+  const dayNames = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sab'];
+  const dayName = dayNames[dateObj.getDay()];
+  
+  if (!settings.workingDays.includes(dayName)) {
+    return res.json({ availableSlots: [] });
+  }
+  
+  // Gerar todos os horários possíveis do dia
+  const [startHour, startMin] = settings.businessHoursStart.split(':').map(Number);
+  const [endHour, endMin] = settings.businessHoursEnd.split(':').map(Number);
+  const interval = settings.timeSlotInterval;
+  
+  const availableSlots = [];
+  let currentHour = startHour;
+  let currentMin = startMin;
+  
+  while (currentHour < endHour || (currentHour === endHour && currentMin < endMin)) {
+    const timeString = `${String(currentHour).padStart(2, '0')}:${String(currentMin).padStart(2, '0')}`;
+    
+    // Calcular horário de término
+    const endTime = new Date(dateObj);
+    endTime.setHours(currentHour, currentMin + serviceDuration, 0, 0);
+    const endTimeString = `${String(endTime.getHours()).padStart(2, '0')}:${String(endTime.getMinutes()).padStart(2, '0')}`;
+    
+    // Verificar se o horário de término não ultrapassa o horário de fechamento
+    if (endTime.getHours() < endHour || (endTime.getHours() === endHour && endTime.getMinutes() <= endMin)) {
+      // Verificar se há conflito com agendamentos existentes
+      const hasConflict = data.appointments.some(apt => {
+        if (apt.date !== date || apt.status === 'cancelled') return false;
+        if (employeeId && apt.employeeId !== employeeId) return false;
+        
+        const aptStart = new Date(`${apt.date}T${apt.time}`);
+        const aptEnd = new Date(aptStart.getTime() + apt.duration * 60000);
+        const slotStart = new Date(`${date}T${timeString}`);
+        const slotEnd = new Date(slotStart.getTime() + serviceDuration * 60000);
+        
+        // Verificar sobreposição
+        return (slotStart < aptEnd && slotEnd > aptStart);
+      });
+      
+      if (!hasConflict) {
+        availableSlots.push({
+          time: timeString,
+          endTime: endTimeString,
+          available: true
+        });
+      }
+    }
+    
+    // Avançar para o próximo horário
+    currentMin += interval;
+    if (currentMin >= 60) {
+      currentMin = 0;
+      currentHour++;
+    }
+  }
+  
+  res.json({ availableSlots });
+});
+
+// POST /api/appointments - Criar novo agendamento
+app.post('/api/appointments', (req, res) => {
+  const data = readData();
+  const { serviceId, date, time, clientName, clientPhone, clientEmail, employeeId, notes } = req.body;
+  
+  if (!serviceId || !date || !time || !clientName || !clientPhone) {
+    return res.status(400).json({ 
+      error: 'Campos obrigatórios: serviceId, date, time, clientName, clientPhone' 
+    });
+  }
+  
+  // Verificar se o serviço existe e está ativo
+  const service = data.services.find(s => s.id === serviceId && s.active);
+  if (!service) {
+    return res.status(400).json({ error: 'Serviço não encontrado ou inativo' });
+  }
+  
+  // Verificar se o horário ainda está disponível
+  const hasConflict = data.appointments.some(apt => {
+    if (apt.date !== date || apt.time === time || apt.status === 'cancelled') return false;
+    if (employeeId && apt.employeeId !== employeeId) return false;
+    
+    const aptStart = new Date(`${apt.date}T${apt.time}`);
+    const aptEnd = new Date(aptStart.getTime() + apt.duration * 60000);
+    const newStart = new Date(`${date}T${time}`);
+    const newEnd = new Date(newStart.getTime() + service.duration * 60000);
+    
+    return (newStart < aptEnd && newEnd > aptStart);
+  });
+  
+  if (hasConflict) {
+    return res.status(409).json({ error: 'Horário não disponível' });
+  }
+  
+  const newAppointment = {
+    id: Date.now().toString(),
+    serviceId,
+    serviceName: service.name,
+    date,
+    time,
+    duration: service.duration,
+    clientName,
+    clientPhone,
+    clientEmail: clientEmail || '',
+    employeeId: employeeId || null,
+    status: 'confirmed',
+    notes: notes || '',
+    createdAt: new Date().toISOString()
+  };
+  
+  data.appointments.push(newAppointment);
+  saveData(data);
+  
+  res.status(201).json(newAppointment);
+});
+
+// PUT /api/appointments/:id - Atualizar agendamento
+app.put('/api/appointments/:id', (req, res) => {
+  const data = readData();
+  const appointmentIndex = data.appointments.findIndex(a => a.id === req.params.id);
+  
+  if (appointmentIndex === -1) {
+    return res.status(404).json({ error: 'Agendamento não encontrado' });
+  }
+  
+  data.appointments[appointmentIndex] = {
+    ...data.appointments[appointmentIndex],
+    ...req.body,
+    id: req.params.id
+  };
+  
+  saveData(data);
+  res.json(data.appointments[appointmentIndex]);
+});
+
+// DELETE /api/appointments/:id - Cancelar/deletar agendamento
+app.delete('/api/appointments/:id', (req, res) => {
+  const data = readData();
+  const appointmentIndex = data.appointments.findIndex(a => a.id === req.params.id);
+  
+  if (appointmentIndex === -1) {
+    return res.status(404).json({ error: 'Agendamento não encontrado' });
+  }
+  
+  data.appointments.splice(appointmentIndex, 1);
+  saveData(data);
+  
+  res.json({ message: 'Agendamento deletado com sucesso' });
+});
+
+// GET /api/business/settings - Obter configurações do negócio
+app.get('/api/business/settings', (req, res) => {
+  const data = readData();
+  res.json(data.businessSettings);
+});
+
+// PUT /api/business/settings - Atualizar configurações do negócio
+app.put('/api/business/settings', (req, res) => {
+  const data = readData();
+  data.businessSettings = {
+    ...data.businessSettings,
+    ...req.body
+  };
+  saveData(data);
+  res.json(data.businessSettings);
+});
+
+// ==================== ROTA DE SAÚDE ====================
+
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    version: '1.0.0'
+  });
+});
+
+// Iniciar servidor
+app.listen(PORT, () => {
+  console.log(`🚀 Servidor rodando em http://localhost:${PORT}`);
+  console.log(`📡 API disponível em http://localhost:${PORT}/api`);
+  console.log(`\n📋 Endpoints disponíveis:`);
+  console.log(`   GET    /api/categories`);
+  console.log(`   GET    /api/categories/:id`);
+  console.log(`   POST   /api/categories`);
+  console.log(`   PUT    /api/categories/:id`);
+  console.log(`   DELETE /api/categories/:id`);
+  console.log(`   GET    /api/services`);
+  console.log(`   GET    /api/services/:id`);
+  console.log(`   POST   /api/services`);
+  console.log(`   PUT    /api/services/:id`);
+  console.log(`   DELETE /api/services/:id`);
+  console.log(`   GET    /api/employees`);
+  console.log(`   GET    /api/employees/:id`);
+  console.log(`   POST   /api/employees`);
+  console.log(`   PUT    /api/employees/:id`);
+  console.log(`   DELETE /api/employees/:id`);
+  console.log(`   GET    /api/business`);
+  console.log(`   GET    /api/business/settings`);
+  console.log(`   PUT    /api/business/settings`);
+  console.log(`   GET    /api/appointments`);
+  console.log(`   GET    /api/appointments/available`);
+  console.log(`   POST   /api/appointments`);
+  console.log(`   PUT    /api/appointments/:id`);
+  console.log(`   DELETE /api/appointments/:id`);
+  console.log(`   GET    /api/health`);
+});
